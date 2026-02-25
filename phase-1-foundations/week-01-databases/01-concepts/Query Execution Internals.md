@@ -1,0 +1,176 @@
+## 📖 CONCEPT 2: QUERY EXECUTION INTERNALS
+
+### What Happens When You Run a Query?
+
+```sql
+SELECT name, email 
+FROM users 
+WHERE age > 25 
+ORDER BY created_at 
+LIMIT 10;
+```
+
+**The Journey:**
+For more Info: https://medium.com/@mangesh28/behind-the-scenes-of-a-simple-sql-query-in-postgresql-76d025a83da3
+
+#### 1. PARSER (Syntax Check)
+- Checks if SQL is valid
+- Builds a parse tree
+- Catches syntax errors
+
+#### 2. REWRITER (Apply Rules)
+- Applies views (if any)
+- Applies row-level security
+- Rewrites query if needed
+
+#### 3. PLANNER/OPTIMIZER (The Brain)
+**This is where the magic happens!**
+
+The planner:
+- Looks at available indexes
+- Estimates number of rows to scan
+- Estimates cost of different approaches
+- Chooses the cheapest plan
+
+**Example Plans:**
+
+**Option 1: Sequential Scan**
+```
+Cost: Read all pages → Filter → Sort → Limit
+Fast if: Table is small OR need most rows
+```
+
+**Option 2: Index Scan**
+```
+Cost: Read index → Fetch matching rows → Sort → Limit
+Fast if: Filtering eliminates most rows
+```
+
+**Option 3: Index-Only Scan**
+```
+Cost: Read index only (if it covers all needed columns)
+Fastest if: Index contains all columns in SELECT
+```
+
+**The planner picks based on:**
+- Table statistics (ANALYZE)
+- Index availability
+- Estimated selectivity of WHERE clause
+- Available memory (work_mem)
+
+#### 4. EXECUTOR (Does the Work)
+- Executes the chosen plan
+- Reads pages from disk/cache
+- Applies filters
+- Sorts results
+- Returns rows
+
+---
+
+### Understanding Query Plans
+For more Info: https://medium.com/@amittdhiman91/how-postgresql-query-planner-really-works-bf3ce33c8f7a
+
+**The Most Important Nodes:**
+
+**Sequential Scan:**
+```
+Seq Scan on users  (cost=0.00..180.00 rows=5000 width=64)
+  Filter: (age > 25)
+```
+- Reads every row in the table
+- Applies filter
+- cost=startup..total
+- rows=estimated output
+- width=average row size in bytes
+
+**Index Scan:**
+```
+Index Scan using users_age_idx on users  
+  (cost=0.42..83.52 rows=1500 width=64)
+  Index Cond: (age > 25)
+```
+- Uses index to find matching rows
+- Faster startup (0.42 vs 0.00)
+- Lower total cost (83.52 vs 180.00)
+
+**Bitmap Heap Scan:**
+```
+Bitmap Heap Scan on users  (cost=41.18..245.37 rows=1500 width=64)
+  Recheck Cond: (age > 25)
+  -> Bitmap Index Scan on users_age_idx  
+       (cost=0.00..40.80 rows=1500 width=0)
+       Index Cond: (age > 25)
+```
+- Build bitmap of matching pages
+- Then read those pages
+- Good for medium selectivity
+
+**Sort:**
+```
+Sort  (cost=315.39..319.14 rows=1500 width=64)
+  Sort Key: created_at
+  -> Seq Scan on users  (cost=0.00..180.00 rows=1500 width=64)
+```
+- Sorts the result
+- Cost depends on number of rows and available work_mem
+
+**Limit:**
+```
+Limit  (cost=0.42..1.67 rows=10 width=64)
+  -> Index Scan using users_created_at_idx on users  
+       (cost=0.42..187.54 rows=1500 width=64)
+```
+- Stops after N rows
+- Can dramatically reduce actual execution time
+
+---
+
+### Cost Estimation
+
+**What is "cost"?**
+- NOT actual time
+- Abstract unit representing I/O + CPU work
+- Used to compare plans
+
+**Typical costs:**
+- Sequential page read: 1.0
+- Random page read: 4.0
+- CPU operation: 0.01
+
+**Example:**
+```
+cost=0.00..180.00
+```
+- Startup cost: 0.00 (no setup needed)
+- Total cost: 180.00 (reading ~180 pages sequentially)
+
+---
+
+### Statistics and ANALYZE
+
+**The Problem:** Planner needs to estimate costs accurately.
+
+**The Solution:** Table statistics.
+
+**What ANALYZE Does:**
+```sql
+ANALYZE users;
+```
+- Samples rows from the table
+- Calculates statistics:
+  - Number of distinct values per column
+  - Most common values
+  - Distribution of values (histogram)
+  - Correlation with physical storage order
+
+**Check statistics:**
+```sql
+SELECT * FROM pg_stats WHERE tablename = 'users';
+```
+
+**Why This Matters:**
+- Outdated stats → bad query plans
+- After bulk INSERT/UPDATE → run ANALYZE
+- Large tables: ANALYZE runs automatically (autovacuum)
+
+---
